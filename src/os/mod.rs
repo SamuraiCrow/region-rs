@@ -4,6 +4,12 @@ mod windows;
 #[cfg(windows)]
 pub use self::windows::*;
 
+#[cfg(haiku)]
+mod haiku;
+
+#[cfg(haiku)]
+pub use self::haiku::*;
+
 #[cfg(unix)]
 mod unix;
 

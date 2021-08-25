@@ -1,5 +1,6 @@
 [package]
-authors = ["Elliott Linder <elliott.darfink@gmail.com>"]
+authors = ["Elliott Linder <elliott.darfink@gmail.com>",
+	"Samuel D. Crow <samueldcrow@gmail.com>"]
 description = "Cross-platform virtual memory API"
 documentation = "https://docs.rs/region"
 edition = "2018"
@@ -20,6 +21,9 @@ mach = "0.3"
 
 [target."cfg(windows)".dependencies]
 winapi = { version = "0.3", features = ["basetsd", "minwindef", "sysinfoapi", "memoryapi", "winnt"] }
+
+[target."cfg(haiku)".dependencies]
+haiku-sys = { version = "0.2" }
 
 [target."cfg(unix)".dev-dependencies]
 mmap = { package = "mmap-fixed", version = "0.1.5" }
