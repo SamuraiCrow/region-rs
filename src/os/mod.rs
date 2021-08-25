@@ -4,12 +4,6 @@ mod windows;
 #[cfg(windows)]
 pub use self::windows::*;
 
-#[cfg(haiku)]
-mod haiku;
-
-#[cfg(haiku)]
-pub use self::haiku::*;
-
 #[cfg(unix)]
 mod unix;
 
@@ -45,3 +39,10 @@ mod openbsd;
 
 #[cfg(target_os = "openbsd")]
 pub use self::openbsd::*;
+
+#[cfg(target_os = "haiku")]
+mod haiku;
+
+#[cfg(target_os = "haiku")]
+pub use self::haiku::*;
+
