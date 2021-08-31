@@ -1,29 +1,35 @@
 use crate::{Error, Protection, Region, Result};
-use libc::{c_uint, area_info, area_id, B_WRITE_AREA, B_READ_AREA, B_EXECUTE_AREA, B_BAD_VALUE,
-	delete_area, get_area_info, get_next_area_info};
+use libc::{c_uint, c_void, area_info, area_id, area_for,
+  B_WRITE_AREA, B_READ_AREA, B_EXECUTE_AREA, B_BAD_VALUE,
+  get_area_info, get_next_area_info};
+use std::alloc::{Layout, alloc_zeroed, dealloc};
 
 pub struct QueryIter {
   info: *mut area_info,
-  cookie: *mut isize,
-  id: area_id
+  cookie: *mut isize
 }
 
 impl QueryIter {
-  pub fn new(_origin: *const (), _size: usize) -> Result<QueryIter> {
-  
-  	let id: area_id = unsafe{std::mem::zeroed()};
-  	let info: *mut area_info = unsafe{std::mem::zeroed()};
-  	let cval = std::ptr::null_mut();
-  	let status = unsafe{get_area_info(id, info)};
-  	match status {
-  	  B_BAD_VALUE => {
-	  	Err(Error::UnmappedRegion)
-  	  }
-	  _ => Ok( QueryIter {
-    	info,
-    	cookie: cval,
-    	id})
-  	}
+  pub fn new(origin: *const (), size: usize) -> Result<QueryIter> {
+  	let start: *mut c_void = origin as *mut () as *mut c_void;
+    let id: area_id = unsafe{area_for(start)};
+    let info: *mut area_info = unsafe{alloc_zeroed(
+      Layout::new::<area_info>())
+      .cast::<area_info>()};
+    let cval = std::ptr::null_mut();
+    let status = unsafe{get_area_info(id, info)};
+    if status == B_BAD_VALUE || unsafe{(*info).size <= size} {
+      Err(Error::UnmappedRegion)
+    }
+    else
+    {
+      Ok(
+        QueryIter {
+          info,
+          cookie: cval
+        }
+      )
+    }
   }
 
   pub fn upper_bound(&self) -> usize {
@@ -35,7 +41,7 @@ impl Iterator for QueryIter {
   type Item = Result<Region>;
 
   fn next(&mut self) -> Option<Self::Item> {
-  	let status = unsafe{get_next_area_info(0, self.cookie, self.info)};
+    let status = unsafe{get_next_area_info(0, self.cookie, self.info)};
     if status == B_BAD_VALUE {
       return None;
     }
@@ -43,7 +49,7 @@ impl Iterator for QueryIter {
     Some(Ok(Region {
       base: unsafe{(*self.info).address as *const _},
       protection: Protection::from_native(unsafe{(*self.info).protection}),
-      shared: false, // TODO: UPDATE THIS TO A REAL VALUE
+      shared: unsafe{(*self.info).team==0},
       size: unsafe{(*self.info).size},
       ..Default::default()
     }))
@@ -52,7 +58,7 @@ impl Iterator for QueryIter {
 
 impl Drop for QueryIter {
   fn drop(&mut self) {
-    unsafe { delete_area(self.id); }
+  	unsafe{dealloc((self.info).cast::<u8>(), Layout::new::<area_info>())};
   }
 }
 
