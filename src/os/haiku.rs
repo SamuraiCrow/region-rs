@@ -1,39 +1,51 @@
 use crate::{Error, Protection, Region, Result};
-use libc::{c_uint, c_void, area_info, area_id, area_for,
-  B_WRITE_AREA, B_READ_AREA, B_EXECUTE_AREA, B_BAD_VALUE,
-  get_area_info, get_next_area_info};
+use libc::{c_uint, c_void, area_info, area_id, area_for, thread_info, team_id,
+  B_WRITE_AREA, B_READ_AREA, B_EXECUTE_AREA, B_BAD_VALUE, B_OK,
+  get_area_info, get_next_area_info, get_thread_info, find_thread};
 use std::alloc::{Layout, alloc_zeroed, dealloc};
 
 pub struct QueryIter {
   info: *mut area_info,
-  cookie: *mut isize
+  cookie: *mut isize,
+  id: team_id
 }
 
 impl QueryIter {
   pub fn new(origin: *const (), size: usize) -> Result<QueryIter> {
-  	let start: *mut c_void = origin as *mut () as *mut c_void;
-    let id: area_id = unsafe{area_for(start)};
-    let info: *mut area_info = unsafe{alloc_zeroed(
+    let start: *mut c_void = origin as *mut () as *mut c_void;
+    let area_id: area_id = unsafe{ area_for(start) };
+    let mut team_info = std::mem::MaybeUninit::<thread_info>::uninit();
+    let get_team = unsafe {
+      get_thread_info(find_thread(0 as *const i8),
+      team_info.as_mut_ptr() ) == B_OK
+    };
+    let id_team = if get_team {
+      let team_info = unsafe { team_info.assume_init() };
+      team_info.team
+    } else {
+     -1
+    };
+    if !get_team {
+      let e=std::io::Error::new(std::io::ErrorKind::Other, "get_thread_info");
+      return Err(Error::SystemCall(e));
+    }
+    let info: *mut area_info = unsafe{ alloc_zeroed(
       Layout::new::<area_info>())
-      .cast::<area_info>()};
+      .cast::<area_info>() };
     let cval = std::ptr::null_mut();
-    let status = unsafe{get_area_info(id, info)};
-    if status == B_BAD_VALUE || unsafe{(*info).size <= size} {
-      Err(Error::UnmappedRegion)
+    let status = unsafe{ get_area_info(area_id, info) };
+    if status == B_BAD_VALUE || unsafe{(*info).size < size} {
+      return Err(Error::UnmappedRegion);
     }
-    else
-    {
-      Ok(
-        QueryIter {
-          info,
-          cookie: cval
-        }
-      )
-    }
+    Ok(QueryIter {
+      info,
+      cookie: cval,
+      id: id_team
+    })
   }
 
   pub fn upper_bound(&self) -> usize {
-    unsafe{(*self.info).size}
+    unsafe{ (*self.info).size }
   }
 }
 
@@ -41,16 +53,16 @@ impl Iterator for QueryIter {
   type Item = Result<Region>;
 
   fn next(&mut self) -> Option<Self::Item> {
-    let status = unsafe{get_next_area_info(0, self.cookie, self.info)};
+    let status = unsafe { get_next_area_info(0, self.cookie, self.info) };
     if status == B_BAD_VALUE {
       return None;
     }
 
     Some(Ok(Region {
-      base: unsafe{(*self.info).address as *const _},
-      protection: Protection::from_native(unsafe{(*self.info).protection}),
-      shared: unsafe{(*self.info).team==0},
-      size: unsafe{(*self.info).size},
+      base: unsafe { (*self.info).address as *const _ },
+      protection: Protection::from_native(unsafe { (*self.info).protection } ),
+      shared: unsafe { (*self.info).team == self.id },
+      size: unsafe { (*self.info).size },
       ..Default::default()
     }))
   }
@@ -58,7 +70,7 @@ impl Iterator for QueryIter {
 
 impl Drop for QueryIter {
   fn drop(&mut self) {
-  	unsafe{dealloc((self.info).cast::<u8>(), Layout::new::<area_info>())};
+  	unsafe { dealloc((self.info).cast::<u8>(), Layout::new::<area_info>()) };
   }
 }
 
