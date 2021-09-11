@@ -1,19 +1,24 @@
 use crate::{Error, Protection, Region, Result};
 use libc::{c_uint, c_void, area_info, area_id, area_for, thread_info, team_id,
-  B_WRITE_AREA, B_READ_AREA, B_EXECUTE_AREA, B_BAD_VALUE, B_OK,
+  B_WRITE_AREA, B_READ_AREA, B_EXECUTE_AREA, B_BAD_VALUE, B_OK, //B_PAGE_SIZE,
   get_area_info, get_next_area_info, get_thread_info, find_thread};
 use std::alloc::{Layout, alloc_zeroed, dealloc};
 
 pub struct QueryIter {
   info: *mut area_info,
   cookie: *mut isize,
-  id: team_id
+  id: team_id,
+  my_size: usize
 }
 
 impl QueryIter {
   pub fn new(origin: *const (), size: usize) -> Result<QueryIter> {
     let start: *mut c_void = origin as *mut () as *mut c_void;
+    let end: *mut c_void = unsafe { start.add(size) };
     let area_id: area_id = unsafe{ area_for(start) };
+    if unsafe { area_for(end) } != area_id.clone() {
+    	return Err(Error::UnmappedRegion);
+    }
     let mut team_info = std::mem::MaybeUninit::<thread_info>::uninit();
     let get_team = unsafe {
       get_thread_info(find_thread(0 as *const i8),
@@ -34,18 +39,20 @@ impl QueryIter {
       .cast::<area_info>() };
     let cval = std::ptr::null_mut();
     let status = unsafe{ get_area_info(area_id, info) };
-    if status == B_BAD_VALUE || unsafe{(*info).size < size} {
+    if status == B_BAD_VALUE {
       return Err(Error::UnmappedRegion);
     }
     Ok(QueryIter {
       info,
       cookie: cval,
-      id: id_team
+      id: id_team,
+      my_size: size
     })
   }
 
   pub fn upper_bound(&self) -> usize {
-    unsafe{ (*self.info).size }
+    //unsafe{ (*self.info).size }
+    self.my_size
   }
 }
 
