@@ -1,8 +1,9 @@
 use crate::{Error, Protection, Region, Result};
 use libc::{c_uint, c_void, area_info, area_id, area_for, thread_info, team_id,
   B_WRITE_AREA, B_READ_AREA, B_EXECUTE_AREA, B_BAD_VALUE, B_OK, //B_PAGE_SIZE,
-  get_area_info, get_next_area_info, get_thread_info, find_thread};
-use std::alloc::{Layout, alloc_zeroed, dealloc};
+  get_area_info, get_next_area_info, get_thread_info, find_thread,
+  malloc, free};
+//use std::alloc::{Layout, alloc_zeroed, dealloc};
 
 pub struct QueryIter {
   info: *mut area_info,
@@ -34,9 +35,7 @@ impl QueryIter {
       let e=std::io::Error::new(std::io::ErrorKind::Other, "get_thread_info");
       return Err(Error::SystemCall(e));
     }
-    let info: *mut area_info = unsafe{ alloc_zeroed(
-      Layout::new::<area_info>())
-      .cast::<area_info>() };
+    let info: *mut area_info = unsafe{ malloc(std::mem::size_of::<area_info>()) as *mut area_info };
     let cval = std::ptr::null_mut();
     let status = unsafe{ get_area_info(area_id, info) };
     if status == B_BAD_VALUE {
@@ -77,7 +76,7 @@ impl Iterator for QueryIter {
 
 impl Drop for QueryIter {
   fn drop(&mut self) {
-  	unsafe { dealloc((self.info).cast::<u8>(), Layout::new::<area_info>()) };
+  	unsafe { free(self.info as *mut c_void) };
   }
 }
 
