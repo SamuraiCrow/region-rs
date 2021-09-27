@@ -1,14 +1,90 @@
 use crate::{Error, Protection, Region, Result};
-use libc::{c_uint, c_void, area_info, area_id, area_for, thread_info, team_id,
+use libc::{c_uint, c_void, area_info, area_id, area_for, thread_info,
   B_WRITE_AREA, B_READ_AREA, B_EXECUTE_AREA, B_BAD_VALUE, B_OK, B_PAGE_SIZE,
-  get_area_info, get_next_area_info, get_thread_info, find_thread,
-  malloc, free};
+  get_area_info, get_next_area_info, get_thread_info, find_thread, team_id,
+  set_area_protection, create_area, delete_area,
+  B_ANY_ADDRESS, B_EXACT_ADDRESS, B_NO_LOCK, B_NO_MEMORY, B_ERROR };
+use std::io;
+
+pub fn page_size() -> usize {
+  return B_PAGE_SIZE;
+}
+
+pub unsafe fn alloc(base: *const (), size: usize, protection: Protection) -> Result<*const ()> {
+  let info: *mut area_info = libc::malloc(std::mem::size_of::<area_info>()) as *mut area_info;
+  
+  let flags = if base.is_null() {
+  	B_ANY_ADDRESS
+  } else {
+    B_EXACT_ADDRESS
+  };
+  
+  let mut addr = base as *mut () as *mut c_void;
+  
+  let id = create_area(b"\0".as_ptr() as *const i8, std::ptr::addr_of_mut!(addr), 
+    flags, size, B_NO_LOCK, protection.to_native());
+    match id {
+    B_BAD_VALUE => Err(Error::SystemCall(io::Error::last_os_error())),
+    B_NO_MEMORY => Err(Error::SystemCall(io::Error::last_os_error())),
+    B_ERROR => Err(Error::SystemCall(io::Error::last_os_error())),
+    _ => {
+      match get_area_info(id, info) {
+        B_BAD_VALUE => Err(Error::SystemCall(io::Error::last_os_error())),    
+        _ => {
+          let ret = (*info).address;
+          libc::free(info as *mut c_void);
+          return Ok(ret as *mut () as *const () );
+        }
+      }
+    }
+  }
+}
+
+pub unsafe fn free(base: *const (), _size: usize) -> Result<()> {
+  let id = area_for(base as *mut () as *mut c_void);
+  match id {
+    B_ERROR => Err(Error::SystemCall(io::Error::last_os_error())),
+    _ => {
+      match delete_area(id) {
+        B_ERROR => Err(Error::SystemCall(io::Error::last_os_error())),
+        _ => Ok(())        
+      }
+    }
+  }
+}
+
+pub unsafe fn protect(base: *const (), _size: usize, protection: Protection) -> Result<()> {
+  let id = area_for(base as *mut () as *mut c_void);
+  match id {
+    B_ERROR => Err(Error::SystemCall(io::Error::last_os_error())),
+    _ => {
+      match set_area_protection(id, protection.to_native()) {
+        B_BAD_VALUE => Err(Error::SystemCall(io::Error::last_os_error())),
+        _ => Ok(())
+      }
+    }
+  }
+}
+
+pub fn lock(base: *const (), size: usize) -> Result<()> {
+  match unsafe { libc::mlock(base.cast(), size) } {
+    0 => Ok(()),
+    _ => Err(Error::SystemCall(io::Error::last_os_error())),
+  }
+}
+
+pub fn unlock(base: *const (), size: usize) -> Result<()> {
+  match unsafe { libc::munlock(base.cast(), size) } {
+    0 => Ok(()),
+    _ => Err(Error::SystemCall(io::Error::last_os_error())),
+  }
+}
 
 pub struct QueryIter {
   info: *mut area_info,
   cookie: *mut isize,
   id: team_id,
-  my_size: usize
+  upper_bound: usize
 }
 
 impl QueryIter {
@@ -34,7 +110,7 @@ impl QueryIter {
       let e=std::io::Error::new(std::io::ErrorKind::Other, "get_thread_info");
       return Err(Error::SystemCall(e));
     }
-    let info: *mut area_info = unsafe{ malloc(std::mem::size_of::<area_info>()) as *mut area_info };
+    let info: *mut area_info = unsafe{ libc::malloc(std::mem::size_of::<area_info>()) as *mut area_info };
     let cval = std::ptr::null_mut();
     let status = unsafe{ get_area_info(area_id, info) };
     if status == B_BAD_VALUE {
@@ -44,13 +120,12 @@ impl QueryIter {
       info,
       cookie: cval,
       id: id_team,
-      my_size: size
+      upper_bound: end as usize
     })
   }
 
   pub fn upper_bound(&self) -> usize {
-    //unsafe{ (*self.info).size }
-    self.my_size
+    self.upper_bound
   }
 }
 
@@ -75,7 +150,7 @@ impl Iterator for QueryIter {
 
 impl Drop for QueryIter {
   fn drop(&mut self) {
-  	unsafe { free(self.info as *mut c_void) };
+  	unsafe { libc::free(self.info as *mut c_void) };
   }
 }
 
@@ -91,6 +166,19 @@ impl Protection {
       .iter()
       .filter(|(flag, _)| protection & *flag == *flag)
       .fold(Protection::NONE, |acc, (_, prot)| acc | *prot)
+  }
+  
+  fn to_native(self) -> c_uint {
+    const MAPPINGS: &[(Protection, c_uint)] = &[
+      (Protection::READ, B_READ_AREA),
+      (Protection::WRITE, B_WRITE_AREA),
+      (Protection::EXECUTE, B_EXECUTE_AREA),
+    ];
+
+    MAPPINGS
+      .iter()
+      .filter(|(flag, _)| self & *flag == *flag)
+      .fold(0 as u32, |acc, (_, prot)| acc | *prot)
   }
 }
 
