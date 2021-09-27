@@ -1,9 +1,8 @@
 use crate::{Error, Protection, Region, Result};
 use libc::{c_uint, c_void, area_info, area_id, area_for, thread_info, team_id,
-  B_WRITE_AREA, B_READ_AREA, B_EXECUTE_AREA, B_BAD_VALUE, B_OK, //B_PAGE_SIZE,
+  B_WRITE_AREA, B_READ_AREA, B_EXECUTE_AREA, B_BAD_VALUE, B_OK, B_PAGE_SIZE,
   get_area_info, get_next_area_info, get_thread_info, find_thread,
   malloc, free};
-//use std::alloc::{Layout, alloc_zeroed, dealloc};
 
 pub struct QueryIter {
   info: *mut area_info,
