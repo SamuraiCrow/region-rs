@@ -11,8 +11,7 @@ pub fn page_size() -> usize {
 }
 
 pub unsafe fn alloc(base: *const (), size: usize, protection: Protection) -> Result<*const ()> {
-  let info: *mut area_info = libc::malloc(std::mem::size_of::<area_info>()) as *mut area_info;
-  
+  // allocate at fixed address if requested
   let id = if base.is_null() {
     create_area(b"\0".as_ptr() as *const i8, std::ptr::null_mut(), 
       B_ANY_ADDRESS, size, B_NO_LOCK, protection.to_native())
@@ -25,30 +24,38 @@ pub unsafe fn alloc(base: *const (), size: usize, protection: Protection) -> Res
   match id {
     B_BAD_VALUE => Err(Error::InvalidParameter("B_BAD_VALUE")),
     B_NO_MEMORY => Err(Error::SystemCall(io::Error::new(io::ErrorKind::OutOfMemory, "allocation failed"))),
-    B_ERROR => Err(Error::SystemCall(io::Error::new(io::ErrorKind::Other, "Unknown error"))),
+    B_ERROR => Err(Error::SystemCall(io::Error::new(io::ErrorKind::Other, "General Error"))),
+    // return address
     B_OK => {
+      let info: *mut area_info = libc::malloc(std::mem::size_of::<area_info>()) as *mut area_info;
       match get_area_info(id, info) {
-        B_BAD_VALUE => Err(Error::InvalidParameter("B_BAD_VALUE")),    
+        B_BAD_VALUE => {
+          libc::free(info as *mut c_void);
+          Err(Error::InvalidParameter("B_BAD_VALUE"))
+        },
         B_OK => {
           let ret = (*info).address;
           libc::free(info as *mut c_void);
           return Ok(ret as *mut () as *const () );
+        },
+        _ => {
+          libc::free(info as *mut c_void);
+          Err(Error::SystemCall(io::Error::new(io::ErrorKind::Other, "Unknown Error")))
         }
-        _ => Err(Error::SystemCall(io::Error::new(io::ErrorKind::Other, "Unknown error"))),
       }
     }
-    _ => Err(Error::SystemCall(io::Error::new(io::ErrorKind::Other, "Unknown error"))),
+    _ => Err(Error::SystemCall(io::Error::new(io::ErrorKind::Other, "Unknown Error"))),
   }
 }
 
 pub unsafe fn free(base: *const (), _size: usize) -> Result<()> {
   let id = area_for(base as *mut () as *mut c_void);
   match id {
-    B_ERROR => Err(Error::SystemCall(io::Error::new(io::ErrorKind::Other, "Unknown error"))),
+    B_ERROR => Err(Error::SystemCall(io::Error::new(io::ErrorKind::Other, "Cannot Find Address"))),
     _ => {
       match delete_area(id) {
-        B_ERROR => Err(Error::SystemCall(io::Error::new(io::ErrorKind::Other, "Unknown error"))),
-        _ => Ok(())        
+        B_ERROR => Err(Error::SystemCall(io::Error::new(io::ErrorKind::Other, "Cannot Deallocate"))),
+        _ => Ok(())
       }
     }
   }
@@ -57,7 +64,7 @@ pub unsafe fn free(base: *const (), _size: usize) -> Result<()> {
 pub unsafe fn protect(base: *const (), _size: usize, protection: Protection) -> Result<()> {
   let id = area_for(base as *mut () as *mut c_void);
   match id {
-    B_ERROR => Err(Error::SystemCall(io::Error::new(io::ErrorKind::Other, "Unknown error"))),
+    B_ERROR => Err(Error::SystemCall(io::Error::new(io::ErrorKind::Other, "Address Unfound"))),
     _ => {
       match set_area_protection(id, protection.to_native()) {
         B_BAD_VALUE => Err(Error::InvalidParameter("B_BAD_VALUE")),
@@ -91,34 +98,39 @@ pub struct QueryIter {
 impl QueryIter {
   pub fn new(origin: *const (), size: usize) -> Result<QueryIter> {
     let start: *mut c_void = origin as *mut () as *mut c_void;
-    let end: *mut c_void = unsafe { start.add(size) };
+    let end = (origin as usize).saturating_add(size);
     let area_id: area_id = unsafe{ area_for(start) };
-    let mut team_info = std::mem::MaybeUninit::<thread_info>::uninit();
-    let get_team = unsafe {
-      get_thread_info(find_thread(0 as *const i8),
-      team_info.as_mut_ptr() ) == B_OK
-    };
-    let id_team = if get_team {
-      let team_info = unsafe { team_info.assume_init() };
-      team_info.team
-    } else {
-     -1
-    };
-    if !get_team {
-      return Err(Error::SystemCall(std::io::Error::new(std::io::ErrorKind::Other, "get_thread_info")));
+    if area_id == B_ERROR {
+      return Err(Error::UnmappedRegion);
+    }
+    let id_thread = unsafe { find_thread(std::ptr::null_mut()) };
+    let info_thread = unsafe { libc::malloc(std::mem::size_of::<thread_info>()) as *mut thread_info };
+    match unsafe { get_thread_info(id_thread, info_thread) } {
+      B_OK => {},
+      _ => {
+      	unsafe { libc::free(info_thread as *mut c_void) };
+      	return Err(Error::SystemCall(io::Error::new(io::ErrorKind::Other, "thread_info failed")));
+      }
     }
     let info: *mut area_info = unsafe{ libc::malloc(std::mem::size_of::<area_info>()) as *mut area_info };
     let cval = std::ptr::null_mut();
-    let status = unsafe{ get_area_info(area_id, info) };
-    if status != B_OK {
-      return Err(Error::UnmappedRegion);
+    match unsafe{ get_area_info(area_id, info) } {
+      B_OK => {
+      	let id_team = unsafe { (*info_thread).team };
+      	unsafe { libc::free(info_thread as *mut c_void) };      	
+      	Ok(QueryIter {
+          info,
+          cookie: cval,
+          id: id_team,
+          upper_bound: end as usize
+        }) 
+      },
+      _ => {
+      	unsafe { libc::free(info_thread as *mut c_void) };
+        unsafe { libc::free(info as *mut c_void) };
+        Err(Error::SystemCall(io::Error::new(io::ErrorKind::Other, "area_info failed")))
+      }
     }
-    Ok(QueryIter {
-      info,
-      cookie: cval,
-      id: id_team,
-      upper_bound: end as usize
-    })
   }
 
   pub fn upper_bound(&self) -> usize {
