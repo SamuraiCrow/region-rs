@@ -1,9 +1,9 @@
-use crate::{Error, Protection, Region, Result};
+use crate::{Error, Protection, Region, Result, util};
 use libc::{c_uint, c_void, area_info, area_id, area_for, thread_info,
   B_WRITE_AREA, B_READ_AREA, B_EXECUTE_AREA, B_BAD_VALUE, B_OK, B_PAGE_SIZE,
   get_area_info, get_next_area_info, get_thread_info, find_thread, team_id,
   set_area_protection, create_area, delete_area,
-  B_ANY_ADDRESS, B_EXACT_ADDRESS, B_NO_LOCK, B_NO_MEMORY, B_ERROR };
+  B_ANY_ADDRESS, B_EXACT_ADDRESS, B_NO_LOCK, B_NO_MEMORY, B_ERROR, B_BAD_ADDRESS };
 use std::io;
 
 pub fn page_size() -> usize {
@@ -11,18 +11,25 @@ pub fn page_size() -> usize {
 }
 
 pub unsafe fn alloc(base: *const (), size: usize, protection: Protection) -> Result<*const ()> {
+  // align base and size
+  let tup = match util::round_to_page_boundaries(base, size) {
+    Err(e) => return Err(e),
+    Ok(t) => t,
+  };
+
   // allocate at fixed address if requested
   let id = if base.is_null() {
-    create_area(b"\0".as_ptr() as *const i8, std::ptr::null_mut(), 
-      B_ANY_ADDRESS, size, B_NO_LOCK, protection.to_native())
+    create_area(b"" as *const u8 as *const i8, std::ptr::null_mut(), 
+      B_ANY_ADDRESS, tup.1, B_NO_LOCK, protection.to_native())
   } else {
-     let mut addr = base as *mut () as *mut c_void;
-     create_area(b"\0".as_ptr() as *const i8, std::ptr::addr_of_mut!(addr), 
-       B_EXACT_ADDRESS, size, B_NO_LOCK, protection.to_native())
+     let mut addr = tup.0 as *mut () as *mut c_void;
+     create_area(b"" as *const u8 as *const i8, std::ptr::addr_of_mut!(addr), 
+       B_EXACT_ADDRESS, tup.1, B_NO_LOCK, protection.to_native())
   };
-  
+
+  // process errors
   match id {
-    B_BAD_VALUE => Err(Error::InvalidParameter("B_BAD_VALUE")),
+    B_BAD_ADDRESS => Err(Error::InvalidParameter("bad address")),
     B_NO_MEMORY => Err(Error::SystemCall(io::Error::new(io::ErrorKind::OutOfMemory, "allocation failed"))),
     B_ERROR => Err(Error::SystemCall(io::Error::new(io::ErrorKind::Other, "General Error"))),
     // return address
