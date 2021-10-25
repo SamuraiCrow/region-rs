@@ -11,7 +11,7 @@ pub fn page_size() -> usize {
 }
 
 pub unsafe fn alloc(base: *const (), size: usize, protection: Protection) -> Result<*const ()> {
-  // align base and size
+  // align base (tup.0) and size (tup.1)
   let tup = match util::round_to_page_boundaries(base, size) {
     Err(e) => return Err(e),
     Ok(t) => t,
@@ -19,21 +19,23 @@ pub unsafe fn alloc(base: *const (), size: usize, protection: Protection) -> Res
 
   // allocate at fixed address if requested
   let id = if base.is_null() {
-    create_area(b"" as *const u8 as *const i8, std::ptr::null_mut(), 
+    let mut addr = tup.0 as *mut () as *mut c_void;
+    create_area(b"region" as *const u8 as *const i8, std::ptr::addr_of_mut!(addr),
       B_ANY_ADDRESS, tup.1, B_NO_LOCK, protection.to_native())
   } else {
      let mut addr = tup.0 as *mut () as *mut c_void;
-     create_area(b"" as *const u8 as *const i8, std::ptr::addr_of_mut!(addr), 
+     create_area(b"region" as *const u8 as *const i8, std::ptr::addr_of_mut!(addr), 
        B_EXACT_ADDRESS, tup.1, B_NO_LOCK, protection.to_native())
   };
 
   // process errors
   match id {
     B_BAD_ADDRESS => Err(Error::InvalidParameter("bad address")),
+    B_BAD_VALUE => Err(Error::InvalidParameter("bad value")),
     B_NO_MEMORY => Err(Error::SystemCall(io::Error::new(io::ErrorKind::OutOfMemory, "allocation failed"))),
     B_ERROR => Err(Error::SystemCall(io::Error::new(io::ErrorKind::Other, "General Error"))),
     // return address
-    B_OK => {
+    _ => {
       let info: *mut area_info = libc::malloc(std::mem::size_of::<area_info>()) as *mut area_info;
       match get_area_info(id, info) {
         B_BAD_VALUE => {
@@ -51,7 +53,6 @@ pub unsafe fn alloc(base: *const (), size: usize, protection: Protection) -> Res
         }
       }
     }
-    _ => Err(Error::SystemCall(io::Error::new(io::ErrorKind::Other, "Unknown Error"))),
   }
 }
 
