@@ -14,10 +14,7 @@ use std::ops::Deref;
 //   it can query the area_info structure and find what it needs.
 pub struct Allocation(RwLock<area_info>);
 
-// a private wrapper for the slice type
-struct Handle(*const (), usize);
-
-struct KeyType(Mutex<Handle>);
+struct KeyType(Mutex<* const ()>);
 
 // no error channel available so it panics at every Poison error encountered
 impl PartialEq for KeyType {
