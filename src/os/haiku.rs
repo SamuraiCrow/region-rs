@@ -6,6 +6,88 @@ use libc::{c_uint, c_void, area_info, area_id, area_for, thread_info,
   B_ANY_ADDRESS, B_EXACT_ADDRESS, B_NO_LOCK, B_NO_MEMORY, B_ERROR, B_BAD_ADDRESS };
 use std::io;
 
+// alloc.rs is incompatible with Haiku because of Protection::NONE and must be
+//   replaced with something capable of dealing with an AREA_ID return type so
+//   it can query the area_info structure and find what it needs.
+pub struct Allocation(RwLock<area_info>);
+
+struct KeyType(Mutex<* const ()>);
+
+// no error channel available so it panics at every Poison error encountered
+impl PartialEq for KeyType {
+  fn eq(&self, other: &Self) -> bool {
+    match self.0.lock() {
+      Ok(me) => {
+      	match other.0.lock() {
+      	  Ok(you) => {
+      	    return me.deref() == you.deref();
+      	  },
+      	  Err(_) => panic!("poisoned pointer encountered")
+      	}
+      },
+      Err(_) => panic!("poisoned pointer encountered")
+    }
+  }
+}
+
+impl Eq for KeyType {}
+
+impl Hash for KeyType {
+  fn hash<H: Hasher>(&self, state: &mut H) {
+    match self.0.lock() {
+      Ok(r) => r.deref().hash(state),
+      Err(_e) => panic!()
+    }
+  }
+}
+
+static ALLPAGES: &HashMap<KeyType, &Allocation> = &HashMap::new();
+
+impl Protection {
+  fn from_native(protection: c_uint) -> Self {
+    const MAPPINGS: &[(c_uint, Protection)] = &[
+      (B_READ_AREA, Protection::READ),
+      (B_WRITE_AREA, Protection::WRITE),
+      (B_EXECUTE_AREA, Protection::EXECUTE),
+    ];
+
+    MAPPINGS
+      .iter()
+      .filter(|(flag, _)| protection & *flag == *flag)
+      .fold(Protection::NONE, |acc, (_, prot)| acc | *prot)
+  }
+  
+  fn to_native(self) -> c_uint {
+    const MAPPINGS: &[(Protection, c_uint)] = &[
+      (Protection::READ, B_READ_AREA),
+      (Protection::WRITE, B_WRITE_AREA),
+      (Protection::EXECUTE, B_EXECUTE_AREA),
+    ];
+
+    MAPPINGS
+      .iter()
+      .filter(|(flag, _)| self & *flag == *flag)
+      .fold(0 as u32, |acc, (_, prot)| acc | *prot)
+  }
+}
+
+pub unsafe fn protect(base: *const (), _size: usize, protection: Protection) -> Result<()> {
+  let addy = KeyType(Mutex::new(base));
+  match ALLPAGES.get(&addy) {
+    Some (info) => {
+      match info.0.into_inner() {
+        Ok(inner) => match set_area_protection(inner.area, protection.to_native()) {
+          B_BAD_VALUE => Err(Error::InvalidParameter("bad value")),
+          _ => Ok(())
+        },
+        _ => Err(Error::UnmappedRegion)
+      }
+    },
+    None => Err(Error::UnmappedRegion)
+  }
+}
+
+#[inline(always)]
 pub fn page_size() -> usize {
   return B_PAGE_SIZE;
 }
