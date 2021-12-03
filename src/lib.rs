@@ -80,19 +80,27 @@
 #[macro_use]
 extern crate bitflags;
 
+#[cfg(not(target_os = "haiku"))]
 pub use alloc::{alloc, alloc_at, Allocation};
+
 pub use error::{Error, Result};
 pub use lock::{lock, unlock, LockGuard};
 pub use protect::{protect, protect_with_handle, ProtectGuard};
 pub use query::{query, query_range, QueryIter};
 
+#[cfg(target_os = "haiku")]
+pub use os::{alloc, alloc_at, Allocation};
+
+#[cfg(not(target_os = "haiku"))]
 mod alloc;
+
 mod error;
 mod lock;
 mod os;
 pub mod page;
 mod protect;
 mod query;
+
 mod util;
 
 /// A descriptor for a mapped memory region.
@@ -302,7 +310,8 @@ mod tests {
     assert_eq!(Protection::WRITE.to_string(), "-w-");
   }
 
-  #[cfg(unix)]
+ // #[cfg(all(unix, not(target_os = "haiku")))]
+ #[cfg(unix)]
   pub mod util {
     use crate::{page, Protection};
     use mmap::{MapOption, MemoryMap};
@@ -363,6 +372,65 @@ mod tests {
       AllocatedPages(allocated_pages)
     }
   }
+  /*
+  #[cfg(target_os = "haiku")]
+  pub mod util {
+    use crate::{page, Protection};
+    use libc::{resize_area, area_info, area_id, get_area_info, malloc, free, set_area_protection,
+      B_OK, B_BAD_VALUE, B_NO_MEMORY, B_ERROR, B_BAD_ADDRESS};
+    use std::ops::Deref;
+    
+    struct AllocatedPages {
+      id: area_id,
+      clones: Vec<area_id>
+    }
+
+    impl Deref for AllocatedPages {
+      type Target = [u8];
+
+      fn deref(&self) -> &Self::Target {
+      	unsafe {
+      	  let info = area_info {..Default::default());
+      	  match get_area_info(self.0, info} {
+      	    B_OK => unsafe {
+      	      std::slice::from_raw_parts((*area).address, (*area).size)
+      	    },
+      	    _ => std::slice::from_raw_parts(std::ptr::NonNull::dangling(),0)
+      	  }
+      	}
+      }
+    }
+
+    #[allow(clippy::fallible_impl_from)]
+    impl From<Protection> for [MapOption] {
+      fn from(protection: Protection) -> Self {
+        let a = PAGES.get()
+        set_area_protection()
+        match protection {
+          Protection::NONE => &[],
+          Protection::READ => &[MapOption::MapReadable],
+          Protection::READ_WRITE => &[MapOption::MapReadable, MapOption::MapWritable],
+          Protection::READ_EXECUTE => &[MapOption::MapReadable, MapOption::MapExecutable],
+          _ => panic!("Unsupported protection {:?}", protection),
+        }
+      }
+    }
+
+    /// Allocates one or more sequential pages for each protection flag.
+    pub fn alloc_pages(pages: &[Protection]) -> impl Deref<Target = [u8]> {
+      let total_size = page::size() * pages.len();
+      let mut id = unsafe { create_area(b"region" as *const u8 as *const i8,
+        std::ptr::NonNull::dangling(), B_ANY_ADDRESS, total_size, B_NO_LOCK, 0);
+      for protection in pages {
+        if unsafe { clone_area(b"clone_region" as *const u8 as *const i8,
+          
+        ) } > B_OK {
+//TODO
+        }
+      }
+    }
+  }
+*/
 
   #[cfg(windows)]
   pub mod util {
