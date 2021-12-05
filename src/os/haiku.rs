@@ -12,7 +12,14 @@ use lazy_static::lazy_static;
 
 // alloc.rs is incompatible with Haiku because of Protection::NONE and must be
 //   replaced with something capable of dealing with an AREA_ID return type so
-//   it can query the area_info structure and find what it needs.
+//   it can query the area_info structure and find what it needs.  Most in-code
+//   comments are duplicated from the alloc.rs file and it forms the basis for
+//   the Haiku version of the allocation structure and methods.
+
+/// A handle to an owned region of memory.
+///
+/// This handle does not dereference to a slice, since the underlying memory may
+/// have been created with [`Protection::NONE`].
 #[derive(Clone)]
 pub struct Allocation(Arc<area_id>);
 
@@ -121,7 +128,10 @@ impl Allocation {
   fn new(my_id: area_id) -> Result<Allocation> {
     Ok(Allocation(Arc::<area_id>::new(my_id)))
   }
-
+  
+  /// Returns a pointer to the allocation's base address.
+  ///
+  /// The address is always aligned to the operating system's page size.
   #[inline(always)]
   pub fn as_ptr<T>(&self) -> *const T {
     match self.refresh_info() {
@@ -130,6 +140,7 @@ impl Allocation {
   	}
   }
   
+  /// Returns a mutable pointer to the allocation's base address.
   #[inline(always)]
   pub fn as_mut_ptr<T>(&self) ->*mut T {
     match self.refresh_info() {
@@ -138,18 +149,26 @@ impl Allocation {
   	}
   }
   
+  /// Returns two raw pointers spanning the allocation's address space.
+  ///
+  /// The returned range is half-open, which means that the end pointer points
+  /// one past the last element of the allocation. This way, an empty allocation
+  /// is represented by two equal pointers, and the difference between the two
+  /// pointers represents the size of the allocation.
   #[inline(always)]
   pub fn as_ptr_range<T>(&self) -> std::ops::Range<*const T> {
   	let range = self.as_range::<T>();
   	(range.start as *const T)..(range.end as *const T)
   }
   
+  /// Returns two mutable raw pointers spanning the allocation's address space.
   #[inline(always)]
   pub fn as_mut_ptr_range<T>(&self) -> std::ops::Range<*mut T> {
   	let range = self.as_range::<T>();
   	(range.start as *mut T)..(range.end as *mut T)
   }
   
+  /// Returns a range spanning the allocation's address space.
   #[inline(always)]
   pub fn as_range<T>(&self) -> std::ops::Range<usize> {
     match self.refresh_info() {
@@ -161,6 +180,10 @@ impl Allocation {
     }
   }
 
+  /// Returns the size of the allocation in bytes.
+  ///
+  /// The size is always aligned to a multiple of the operating system's page
+  /// size.
   #[inline(always)]
   pub fn len(&self) -> usize {
   	match self.refresh_info() { 
@@ -190,6 +213,44 @@ impl Drop for Allocation {
   }
 }
 
+/// Allocates one or more pages of memory, with a defined protection.
+///
+/// This function provides a very simple interface for allocating anonymous
+/// virtual pages. The allocation address will be decided by the operating
+/// system.
+///
+/// # Parameters
+///
+/// - The size may not be zero.
+/// - The size is rounded up to the closest page boundary.
+///
+/// # Errors
+///
+/// - If an interaction with the underlying operating system fails, an error
+/// will be returned.
+/// - If size is zero, [`Error::InvalidParameter`] will be returned.
+///
+/// # Examples
+///
+/// ```
+/// # fn main() -> region::Result<()> {
+/// # if cfg!(any(target_arch = "x86", target_arch = "x86_64")) && !cfg!(target_os = "openbsd") {
+/// use region::Protection;
+/// let ret5 = [0xB8, 0x05, 0x00, 0x00, 0x00, 0xC3u8];
+///
+/// let memory = region::alloc(100, Protection::READ_WRITE_EXECUTE)?;
+/// let slice = unsafe {
+///   std::slice::from_raw_parts_mut(memory.as_ptr::<u8>() as *mut u8, memory.len())
+/// };
+///
+/// slice[..6].copy_from_slice(&ret5);
+/// let x: extern "C" fn() -> i32 = unsafe { std::mem::transmute(slice.as_ptr()) };
+///
+/// assert_eq!(x(), 5);
+/// # }
+/// # Ok(())
+/// # }
+/// ```
 pub fn alloc(size: usize, protection: Protection) -> Result<Allocation> {
   if size == 0 {
     return Err(Error::InvalidParameter("size"));
@@ -231,6 +292,31 @@ pub fn alloc(size: usize, protection: Protection) -> Result<Allocation> {
   }
 }
 
+/// Allocates one or more pages of memory, at a specific address, with a defined
+/// protection.
+///
+/// The returned memory allocation is not guaranteed to reside at the provided
+/// address. E.g. on Windows, new allocations that do not reside within already
+/// reserved memory, are aligned to the operating system's allocation
+/// granularity (most commonly 64KB).
+///
+/// # Implementation
+///
+/// This function is implemented using `VirtualAlloc` on Windows, and `mmap`
+/// with `MAP_FIXED` on POSIX.
+///
+/// # Parameters
+///
+/// - The address is rounded down to the closest page boundary.
+/// - The size may not be zero.
+/// - The size is rounded up to the closest page boundary, relative to the
+///   address.
+///
+/// # Errors
+///
+/// - If an interaction with the underlying operating system fails, an error
+/// will be returned.
+/// - If size is zero, [`Error::InvalidParameter`] will be returned.
 pub fn alloc_at<T>(address: *const T, size: usize, protection: Protection) -> Result<Allocation> {
   let (address, size) = util::round_to_page_boundaries(address, size)?;
 
