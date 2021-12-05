@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Mutex, Arc};
 use std::sync::atomic::AtomicPtr;
+use lazy_static::lazy_static;
 
 // alloc.rs is incompatible with Haiku because of Protection::NONE and must be
 //   replaced with something capable of dealing with an AREA_ID return type so
@@ -31,7 +32,12 @@ impl Hash for KeyType {
   }
 }
 
-static ALLPAGES: Mutex<HashMap<KeyType, Allocation> > = Mutex::new(HashMap::new());
+lazy_static ! {
+  static ref ALLPAGES: Mutex<HashMap<KeyType, Allocation> > = {
+    let m = Mutex::new(HashMap::new());
+    m
+  };
+}
 
 impl Protection {
   fn from_native(protection: c_uint) -> Self {
