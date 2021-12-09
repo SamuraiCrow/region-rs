@@ -255,40 +255,40 @@ pub fn alloc(size: usize, protection: Protection) -> Result<Allocation> {
   if size == 0 {
     return Err(Error::InvalidParameter("size"));
   }
+  match ALLPAGES.lock() {
+    Ok(mut h) => {
   
-  let size = page::ceil(size as *const ()) as usize;
+      let size = page::ceil(size as *const ()) as usize;
   
-  let address = std::ptr::NonNull::<c_void>::dangling().as_ptr();
-  let status = unsafe { create_area(b"region" as *const u8 as *const i8,
-    &address as *const *mut c_void as *mut *mut c_void,
-    B_ANY_ADDRESS, size, B_NO_LOCK, protection.to_native()) };
-  if status < B_OK {
-  	match status {
-      B_BAD_ADDRESS => Err(Error::InvalidParameter("bad address")),
-      B_BAD_VALUE => Err(Error::InvalidParameter("bad value")),
-      B_NO_MEMORY => Err(Error::SystemCall(io::Error::new(io::ErrorKind::OutOfMemory, "allocation failed"))),
-      _ => Err(Error::SystemCall(io::Error::new(io::ErrorKind::Other, "General Error")))
-  	}
-  } else {  
-    // allocation succeeded
-    match Allocation::new(status) {
-      Ok(inner) => {
-      	match inner.refresh_info() {
-      	  Ok(a) => {
-            let addy = KeyType(Arc::new(AtomicPtr::new(a.address as *mut () )));
-            match ALLPAGES.lock() {
-              Ok(mut h) => {
+      let address = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+      let status = unsafe { create_area(b"region" as *const u8 as *const i8,
+        &address as *const *mut c_void as *mut *mut c_void,
+        B_ANY_ADDRESS, size, B_NO_LOCK, protection.to_native()) };
+      if status < B_OK {
+  	    match status {
+          B_BAD_ADDRESS => Err(Error::InvalidParameter("bad address")),
+          B_BAD_VALUE => Err(Error::InvalidParameter("bad value")),
+          B_NO_MEMORY => Err(Error::SystemCall(io::Error::new(io::ErrorKind::OutOfMemory, "allocation failed"))),
+          _ => Err(Error::SystemCall(io::Error::new(io::ErrorKind::Other, "General Error")))
+  	    }
+      } else {
+      // allocation succeeded
+        match Allocation::new(status) {
+          Ok(inner) => {
+            match inner.refresh_info() {
+              Ok(a) => {
+                let addy = KeyType(Arc::new(AtomicPtr::new(a.address as *mut () )));
                 h.insert(addy, inner.clone());
                 return Ok( inner );
-              },
-              _ => panic!("poisoned pointer")
-            }
-      	  },
-      	  Err(e) => Err(e)
-      	}
-      },
-      Err(e) => Err(e)
-    }
+             },
+             Err(e) => Err(e)
+           }
+          },
+          Err(e) => Err(e)
+        }
+      }
+    },
+    _ => panic!("poisoned pointer")
   }
 }
 
@@ -318,36 +318,36 @@ pub fn alloc(size: usize, protection: Protection) -> Result<Allocation> {
 /// will be returned.
 /// - If size is zero, [`Error::InvalidParameter`] will be returned.
 pub fn alloc_at<T>(address: *const T, size: usize, protection: Protection) -> Result<Allocation> {
-  let (address, size) = util::round_to_page_boundaries(address, size)?;
+  match ALLPAGES.lock() {
+    Ok(mut h) => {
+      let (address, size) = util::round_to_page_boundaries(address, size)?;
 
-  let status = unsafe { create_area(b"region" as *const u8 as *const i8, 
-      &address as &*const T as *const *const T as *mut *mut T as *mut *mut c_void,
-      B_EXACT_ADDRESS, size, B_NO_LOCK, protection.to_native()) };
-  if status < B_OK {
-  	match status {
-      B_BAD_ADDRESS => Err(Error::InvalidParameter("bad address")),
-      B_BAD_VALUE => Err(Error::InvalidParameter("bad value")),
-      B_NO_MEMORY => Err(Error::SystemCall(io::Error::new(io::ErrorKind::OutOfMemory, "allocation failed"))),
-      _ => Err(Error::SystemCall(io::Error::new(io::ErrorKind::Other, "General Error")))
-  	}
-  } else {
-    // allocation succeeded
-    match Allocation::new(status) {
-      Ok(inner) => match inner.refresh_info() {
-        Ok(a) => {
-          let addy = KeyType(Arc::new(AtomicPtr::new(a.address as *mut () )));
-          match ALLPAGES.lock() {
-            Ok(mut h) => {
+      let status = unsafe { create_area(b"region" as *const u8 as *const i8, 
+          &address as &*const T as *const *const T as *mut *mut T as *mut *mut c_void,
+          B_EXACT_ADDRESS, size, B_NO_LOCK, protection.to_native()) };
+      if status < B_OK {
+  	    match status {
+          B_BAD_ADDRESS => Err(Error::InvalidParameter("bad address")),
+          B_BAD_VALUE => Err(Error::InvalidParameter("bad value")),
+          B_NO_MEMORY => Err(Error::SystemCall(io::Error::new(io::ErrorKind::OutOfMemory, "allocation failed"))),
+          _ => Err(Error::SystemCall(io::Error::new(io::ErrorKind::Other, "General Error")))
+  	    }
+      } else {
+        // allocation succeeded
+        match Allocation::new(status) {
+          Ok(inner) => match inner.refresh_info() {
+            Ok(a) => {
+              let addy = KeyType(Arc::new(AtomicPtr::new(a.address as *mut () )));
               h.insert(addy, inner.clone()); 
               Ok ( inner )
             },
-            _ => panic!("poisoned pointer")
-          }
-        },
-        Err(e) => Err(e)
-      },
-      Err(e) => Err(e)
-    }
+            Err(e) => Err(e)
+          },
+          Err(e) => Err(e)
+        }
+      }
+    },
+    _ => panic!("poisoned pointer")
   }
 }
 
