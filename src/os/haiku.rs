@@ -198,16 +198,10 @@ impl Drop for Allocation {
   fn drop(&mut self) {
     match self.refresh_info() {
       Ok(inner) => {
+        let addy = KeyType(Arc::new(AtomicPtr::new(inner.address as *mut () )));
         match ALLPAGES.lock() {
           Ok(mut h) => {
-            let mut s = inner.size;
-            // clear all dropped pages from hash
-            while s >= B_PAGE_SIZE {
-              s = s - B_PAGE_SIZE;
-              let addy = unsafe { KeyType(Arc::new(AtomicPtr::new( inner.address.offset(s as isize) as *mut () ))) };
-              h.remove(&addy);
-            }
-            // clear area also
+            h.remove(&addy);
             let result = unsafe { delete_area(inner.area) };
             debug_assert!(result == B_OK, "freeing region: B_BAD_ADDRESS");
           },
@@ -283,12 +277,8 @@ pub fn alloc(size: usize, protection: Protection) -> Result<Allocation> {
           Ok(inner) => {
             match inner.refresh_info() {
               Ok(a) => {
-                let mut s = a.size;
-                while s >= B_PAGE_SIZE {
-                  s = s - B_PAGE_SIZE;
-                  let addy = unsafe { KeyType(Arc::new(AtomicPtr::new( a.address.offset(s as isize) as *mut () ))) };
-                  h.insert(addy, inner.clone());
-                }
+                let addy = KeyType(Arc::new(AtomicPtr::new(a.address as *mut () )));
+                h.insert(addy, inner.clone());
                 return Ok( inner );
              },
              Err(e) => Err(e)
@@ -347,13 +337,8 @@ pub fn alloc_at<T>(address: *const T, size: usize, protection: Protection) -> Re
         match Allocation::new(status) {
           Ok(inner) => match inner.refresh_info() {
             Ok(a) => {
-              let mut s = a.size;
-              // add page lookups for each page of allocation to hash
-              while s >= B_PAGE_SIZE {
-                s = s - B_PAGE_SIZE;
-                let addy = unsafe { KeyType(Arc::new(AtomicPtr::new( a.address.offset(s as isize) as *mut () ))) };
-                h.insert(addy, inner.clone());
-              }
+              let addy = KeyType(Arc::new(AtomicPtr::new(a.address as *mut () )));
+              h.insert(addy, inner.clone()); 
               Ok ( inner )
             },
             Err(e) => Err(e)
