@@ -4,10 +4,10 @@ use libc::{c_uint, c_void, area_info, area_id, get_area_info, get_next_area_info
   B_WRITE_AREA, B_READ_AREA, B_EXECUTE_AREA, B_BAD_VALUE, B_OK, B_PAGE_SIZE,
   B_ANY_ADDRESS, B_EXACT_ADDRESS, B_NO_LOCK, B_NO_MEMORY, B_BAD_ADDRESS };
 use std::io;
-use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::sync::{Mutex, Arc};
+use std::sync::Arc;
 use std::sync::atomic::AtomicPtr;
+use dashmap::DashMap;
 use lazy_static::lazy_static;
 
 // alloc.rs is incompatible with Haiku because of Protection::NONE and must be
@@ -39,11 +39,8 @@ impl Hash for KeyType {
   }
 }
 
-lazy_static ! {
-  static ref ALLPAGES: Mutex<HashMap<KeyType, Allocation> > = {
-    let m = Mutex::new(HashMap::new());
-    m
-  };
+lazy_static! {
+  static ref ALLPAGES: DashMap<KeyType, Allocation> = DashMap::new();
 }
 
 impl Protection {
@@ -76,21 +73,18 @@ impl Protection {
 
 pub unsafe fn protect(base: *const (), _size: usize, protection: Protection) -> Result<()> {
   let addy = KeyType(Arc::new(AtomicPtr::new(base as *mut () )));
-  match ALLPAGES.lock() {
-    Ok(h) => match h.get(&addy) {
-      Some(alloc) => match alloc.refresh_info() {
-        Ok (info) => {
-          if set_area_protection(info.area, protection.to_native()) < B_OK {
-            Err(Error::InvalidParameter("bad value"))
-          } else {
-            Ok(())
-          }
-        },
-        Err(e) => Err(e)
+  match ALLPAGES.get(&addy) {
+    Some(alloc) => match alloc.refresh_info() {
+      Ok (info) => {
+        if set_area_protection(info.area, protection.to_native()) < B_OK {
+          Err(Error::InvalidParameter("bad value"))
+        } else {
+          Ok(())
+        }
       },
-      None => Err(Error::UnmappedRegion)
+      Err(e) => Err(e)
     },
-    _ => Err(Error::UnmappedRegion) 
+    None => Err(Error::UnmappedRegion)
   }
 }
 
@@ -199,14 +193,9 @@ impl Drop for Allocation {
     match self.refresh_info() {
       Ok(inner) => {
         let addy = KeyType(Arc::new(AtomicPtr::new(inner.address as *mut () )));
-        match ALLPAGES.lock() {
-          Ok(mut h) => {
-            h.remove(&addy);
-            let result = unsafe { delete_area(inner.area) };
-            debug_assert!(result == B_OK, "freeing region: B_BAD_ADDRESS");
-          },
-          _ => panic!("poisoned pointer")
-        }
+        ALLPAGES.remove(&addy);
+        let result = unsafe { delete_area(inner.area) };
+        debug_assert!(result == B_OK, "freeing region: B_BAD_ADDRESS");
   	  },
   	  _ => panic!("refresh_info() failed during a Drop")
     }
@@ -255,40 +244,34 @@ pub fn alloc(size: usize, protection: Protection) -> Result<Allocation> {
   if size == 0 {
     return Err(Error::InvalidParameter("size"));
   }
-  match ALLPAGES.lock() {
-    Ok(mut h) => {
-  
-      let size = page::ceil(size as *const ()) as usize;
-  
-      let address = std::ptr::NonNull::<c_void>::dangling().as_ptr();
-      let status = unsafe { create_area(b"region" as *const u8 as *const i8,
-        &address as *const *mut c_void as *mut *mut c_void,
-        B_ANY_ADDRESS, size, B_NO_LOCK, protection.to_native()) };
-      if status < B_OK {
-  	    match status {
-          B_BAD_ADDRESS => Err(Error::InvalidParameter("bad address")),
-          B_BAD_VALUE => Err(Error::InvalidParameter("bad value")),
-          B_NO_MEMORY => Err(Error::SystemCall(io::Error::new(io::ErrorKind::OutOfMemory, "allocation failed"))),
-          _ => Err(Error::SystemCall(io::Error::new(io::ErrorKind::Other, "General Error")))
-  	    }
-      } else {
-      // allocation succeeded
-        match Allocation::new(status) {
-          Ok(inner) => {
-            match inner.refresh_info() {
-              Ok(a) => {
-                let addy = KeyType(Arc::new(AtomicPtr::new(a.address as *mut () )));
-                h.insert(addy, inner.clone());
-                return Ok( inner );
-             },
-             Err(e) => Err(e)
-           }
+  let size = page::ceil(size as *const ()) as usize;
+
+  let address = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+  let status = unsafe { create_area(b"region" as *const u8 as *const i8,
+    &address as *const *mut c_void as *mut *mut c_void,
+    B_ANY_ADDRESS, size, B_NO_LOCK, protection.to_native()) };
+  if status < B_OK {
+    match status {
+      B_BAD_ADDRESS => Err(Error::InvalidParameter("bad address")),
+      B_BAD_VALUE => Err(Error::InvalidParameter("bad value")),
+      B_NO_MEMORY => Err(Error::SystemCall(io::Error::new(io::ErrorKind::OutOfMemory, "allocation failed"))),
+      _ => Err(Error::SystemCall(io::Error::new(io::ErrorKind::Other, "General Error")))
+  	}
+  } else {
+  // allocation succeeded
+    match Allocation::new(status) {
+      Ok(inner) => {
+        match inner.refresh_info() {
+          Ok(a) => {
+            let addy = KeyType(Arc::new(AtomicPtr::new(a.address as *mut () )));
+            ALLPAGES.insert(addy, inner.clone());
+            return Ok( inner );
           },
-          Err(e) => Err(e)
-        }
-      }
-    },
-    _ => panic!("poisoned pointer")
+         Err(e) => Err(e)
+       }
+      },
+      Err(e) => Err(e)
+    }
   }
 }
 
@@ -318,36 +301,31 @@ pub fn alloc(size: usize, protection: Protection) -> Result<Allocation> {
 /// will be returned.
 /// - If size is zero, [`Error::InvalidParameter`] will be returned.
 pub fn alloc_at<T>(address: *const T, size: usize, protection: Protection) -> Result<Allocation> {
-  match ALLPAGES.lock() {
-    Ok(mut h) => {
-      let (address, size) = util::round_to_page_boundaries(address, size)?;
+  let (address, size) = util::round_to_page_boundaries(address, size)?;
 
-      let status = unsafe { create_area(b"region" as *const u8 as *const i8, 
-          &address as &*const T as *const *const T as *mut *mut T as *mut *mut c_void,
-          B_EXACT_ADDRESS, size, B_NO_LOCK, protection.to_native()) };
-      if status < B_OK {
-  	    match status {
-          B_BAD_ADDRESS => Err(Error::InvalidParameter("bad address")),
-          B_BAD_VALUE => Err(Error::InvalidParameter("bad value")),
-          B_NO_MEMORY => Err(Error::SystemCall(io::Error::new(io::ErrorKind::OutOfMemory, "allocation failed"))),
-          _ => Err(Error::SystemCall(io::Error::new(io::ErrorKind::Other, "General Error")))
-  	    }
-      } else {
-        // allocation succeeded
-        match Allocation::new(status) {
-          Ok(inner) => match inner.refresh_info() {
-            Ok(a) => {
-              let addy = KeyType(Arc::new(AtomicPtr::new(a.address as *mut () )));
-              h.insert(addy, inner.clone()); 
-              Ok ( inner )
-            },
-            Err(e) => Err(e)
-          },
-          Err(e) => Err(e)
-        }
-      }
-    },
-    _ => panic!("poisoned pointer")
+  let status = unsafe { create_area(b"region" as *const u8 as *const i8, 
+      &address as &*const T as *const *const T as *mut *mut T as *mut *mut c_void,
+      B_EXACT_ADDRESS, size, B_NO_LOCK, protection.to_native()) };
+  if status < B_OK {
+    match status {
+      B_BAD_ADDRESS => Err(Error::InvalidParameter("bad address")),
+      B_BAD_VALUE => Err(Error::InvalidParameter("bad value")),
+      B_NO_MEMORY => Err(Error::SystemCall(io::Error::new(io::ErrorKind::OutOfMemory, "allocation failed"))),
+      _ => Err(Error::SystemCall(io::Error::new(io::ErrorKind::Other, "General Error")))
+    }
+  } else {
+    // allocation succeeded
+    match Allocation::new(status) {
+      Ok(inner) => match inner.refresh_info() {
+        Ok(a) => {
+          let addy = KeyType(Arc::new(AtomicPtr::new(a.address as *mut () )));
+          ALLPAGES.insert(addy, inner.clone()); 
+          Ok ( inner )
+        },
+        Err(e) => Err(e)
+      },
+      Err(e) => Err(e)
+    }
   }
 }
 
@@ -373,12 +351,9 @@ pub struct QueryIter {
 impl QueryIter {
   pub fn new(origin: *const (), _size: usize) -> Result<QueryIter> {
     let addy = KeyType(Arc::new(AtomicPtr::new(origin as *mut () )));
-    let id = match ALLPAGES.lock() {
-      Ok(h) => match h.get(&addy) {
-        Some(v) => *(v.0), // fetch area_id
-        None => return Err(Error::InvalidParameter("Could not find any allocated pages"))
-      },
-      _ => panic!("poisoned pointer")
+    let id = match ALLPAGES.get(&addy) {
+      Some(v) => *(v.0), // fetch area_id
+      None => return Err(Error::InvalidParameter("Could not find any allocated pages"))
     };
     let qi = QueryIter {
       cookie: 0,
@@ -396,7 +371,7 @@ impl QueryIter {
         team: 0
       }
   	};
-    match unsafe{ get_area_info(id, &[qi.info] as *const area_info as *mut area_info) } {
+    match unsafe{ get_area_info(qi.info.area, &[qi.info] as *const area_info as *mut area_info) } {
       B_OK => Ok( qi ),
       _ => Err(Error::SystemCall(io::Error::new(io::ErrorKind::Other, "area_info failed")))
     }

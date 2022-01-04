@@ -25,4 +25,5 @@ winapi = { version = "0.3", features = ["basetsd", "minwindef", "sysinfoapi", "m
 mmap = { package = "mmap-fixed", version = "0.1.5" }
 
 [target."cfg(target_os = \"haiku\")".dependencies]
+dashmap = "5.0.0"
 lazy_static = "1.4.0"
